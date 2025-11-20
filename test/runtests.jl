@@ -1,12 +1,21 @@
 using Test
 import Logging
+using PowerSystems
+using PowerSystemCaseBuilder
+using MockPackage
+using InfrastructureSystems
+using Logging
+
+const IS = InfrastructureSystems
+const PSY = PowerSystems
+const PSB = PowerSystemCaseBuilder
 
 import Aqua
-Aqua.test_unbound_args(SiennaTemplate)
-Aqua.test_undefined_exports(SiennaTemplate)
-Aqua.test_ambiguities(SiennaTemplate)
-Aqua.test_stale_deps(SiennaTemplate)
-Aqua.test_deps_compat(SiennaTemplate)
+Aqua.test_unbound_args(MockPackage)
+Aqua.test_undefined_exports(MockPackage)
+Aqua.test_ambiguities(MockPackage)
+Aqua.test_stale_deps(MockPackage)
+Aqua.test_deps_compat(MockPackage)
 
 LOG_FILE = "power-systems.log"
 LOG_LEVELS = Dict(
@@ -80,7 +89,6 @@ function run_tests()
         levels = (Logging.Info, Logging.Warn, Logging.Error)
         multi_logger =
             IS.MultiLogger([console_logger, file_logger], IS.LogEventTracker(levels))
-        global_logger(multi_logger)
 
         if !isempty(config.group_levels)
             IS.set_group_levels!(multi_logger, config.group_levels)
@@ -96,12 +104,10 @@ function run_tests()
     end
 end
 
-logger = global_logger()
 
 try
     run_tests()
 finally
     # Guarantee that the global logger is reset.
-    global_logger(logger)
     nothing
 end
