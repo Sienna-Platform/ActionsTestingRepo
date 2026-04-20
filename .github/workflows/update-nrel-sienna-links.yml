@@ -27,7 +27,7 @@ jobs:
           COMMIT_MESSAGE: Replace NREL-Sienna links with Sienna-Platform
           PR_TITLE: Replace NREL-Sienna links with Sienna-Platform
           DRY_RUN: ${{ inputs.dry_run }}
-          GH_TOKEN: ${{ secrets.ORG_PAT != '' && secrets.ORG_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.ORG_PAT && secrets.ORG_PAT || github.token }}
         run: |
           set -u -o pipefail
 
@@ -164,7 +164,7 @@ jobs:
 
             gh pr create \
               --repo "${ORG}/${repo}" \
-              --base "$(git -C "${repo_dir}" remote show origin | sed -n '/HEAD branch/s/.*: //p')" \
+              --base "$(git -C "${repo_dir}" symbolic-ref refs/remotes/origin/HEAD | sed 's#^refs/remotes/origin/##')" \
               --head "${BRANCH_NAME}" \
               --title "${PR_TITLE}" \
               --body "${pr_body}"
