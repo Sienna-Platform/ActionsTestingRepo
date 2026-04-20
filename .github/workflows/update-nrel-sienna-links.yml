@@ -27,12 +27,12 @@ jobs:
           COMMIT_MESSAGE: Replace NREL-Sienna links with Sienna-Platform
           PR_TITLE: Replace NREL-Sienna links with Sienna-Platform
           DRY_RUN: ${{ inputs.dry_run }}
-          GH_TOKEN: ${{ secrets.ORG_PAT && secrets.ORG_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.ORG_PAT }}
         run: |
           set -u -o pipefail
 
           if [ -z "${GH_TOKEN}" ]; then
-            echo "No token available. Set ORG_PAT or ensure GITHUB_TOKEN is present."
+            echo "ORG_PAT is required for cross-repository clone/push/PR operations in ${ORG}."
             exit 1
           fi
 
@@ -160,11 +160,19 @@ jobs:
             git -C "${repo_dir}" commit -m "${COMMIT_MESSAGE}"
             git -C "${repo_dir}" push --set-upstream origin "${BRANCH_NAME}"
 
-            pr_body="This automated update replaces old \`NREL-Sienna\` GitHub references with \`Sienna-Platform\` equivalents.\n\nUpdated patterns:\n- \`github.com/NREL-Sienna\` → \`github.com/Sienna-Platform\`\n- \`NREL-Sienna/\` → \`Sienna-Platform/\`"
+            default_branch="$(gh api "repos/${ORG}/${repo}" --jq '.default_branch')"
+            pr_body="$(cat <<'EOF'
+          This automated update replaces old `NREL-Sienna` GitHub references with `Sienna-Platform` equivalents.
+
+          Updated patterns:
+          - `github.com/NREL-Sienna` → `github.com/Sienna-Platform`
+          - `NREL-Sienna/` → `Sienna-Platform/`
+          EOF
+            )"
 
             gh pr create \
               --repo "${ORG}/${repo}" \
-              --base "$(git -C "${repo_dir}" symbolic-ref refs/remotes/origin/HEAD | sed 's#^refs/remotes/origin/##')" \
+              --base "${default_branch}" \
               --head "${BRANCH_NAME}" \
               --title "${PR_TITLE}" \
               --body "${pr_body}"
