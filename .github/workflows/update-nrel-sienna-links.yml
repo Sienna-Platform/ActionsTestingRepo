@@ -1,0 +1,197 @@
+name: Update NREL-Sienna Links
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print planned changes without opening pull requests"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-links:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      - name: Replace NREL-Sienna links across organization repositories
+        env:
+          ORG: Sienna-Platform
+          BRANCH_NAME: update-nrel-sienna-links
+          COMMIT_MESSAGE: Replace NREL-Sienna links with Sienna-Platform
+          PR_TITLE: Replace NREL-Sienna links with Sienna-Platform
+          DRY_RUN: ${{ inputs.dry_run }}
+          GH_TOKEN: ${{ secrets.ORG_PAT != '' && secrets.ORG_PAT || github.token }}
+        run: |
+          set -u -o pipefail
+
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "No token available. Set ORG_PAT or ensure GITHUB_TOKEN is present."
+            exit 1
+          fi
+
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+
+          updated_repos=()
+          dry_run_repos=()
+          skipped_archived=()
+          skipped_existing_pr=()
+          skipped_no_matches=()
+          skipped_branch_exists=()
+          errored_repos=()
+
+          page=1
+          repos=()
+
+          echo "Discovering repositories in ${ORG}..."
+          while true; do
+            response="$(gh api "/orgs/${ORG}/repos?per_page=100&page=${page}&type=all")" || {
+              echo "Failed to list repositories for page ${page}."
+              exit 1
+            }
+
+            count="$(echo "${response}" | jq 'length')"
+            [ "${count}" -eq 0 ] && break
+
+            while IFS= read -r repo_name; do
+              repos+=("${repo_name}")
+            done < <(echo "${response}" | jq -r '.[] | select(.archived == false) | .name')
+
+            while IFS= read -r archived_repo; do
+              skipped_archived+=("${archived_repo}")
+            done < <(echo "${response}" | jq -r '.[] | select(.archived == true) | .name')
+
+            page=$((page + 1))
+          done
+
+          echo "Found ${#repos[@]} active repositories and ${#skipped_archived[@]} archived repositories."
+
+          for repo in "${repos[@]}"; do
+            echo ""
+            echo "=== Processing ${ORG}/${repo} ==="
+            repo_dir="${workdir}/${repo}"
+
+            clone_url="https://x-access-token:${GH_TOKEN}@github.com/${ORG}/${repo}.git"
+            if ! git clone --depth 1 --quiet "${clone_url}" "${repo_dir}"; then
+              echo "Failed to clone ${ORG}/${repo}; skipping."
+              errored_repos+=("${repo}")
+              continue
+            fi
+
+            if [ "${DRY_RUN}" != "true" ]; then
+              existing_pr_count="$(gh pr list \
+                --repo "${ORG}/${repo}" \
+                --head "${BRANCH_NAME}" \
+                --state open \
+                --json number \
+                --jq 'length')"
+
+              if [ "${existing_pr_count}" -gt 0 ]; then
+                echo "Open PR already exists for branch ${BRANCH_NAME}; skipping ${repo}."
+                skipped_existing_pr+=("${repo}")
+                continue
+              fi
+
+              if git -C "${repo_dir}" ls-remote --exit-code --heads origin "${BRANCH_NAME}" >/dev/null 2>&1; then
+                echo "Remote branch ${BRANCH_NAME} already exists in ${repo}; skipping to avoid overwrite."
+                skipped_branch_exists+=("${repo}")
+                continue
+              fi
+            fi
+
+            changed_files=()
+
+            while IFS= read -r -d '' file; do
+              case "${file}" in
+                *.png|*.jpg|*.jpeg|*.svg|*.gif|*.ico|*.pdf|*.zip|*.tar|*.gz|*.tgz|*.whl|*.jld2|*.7z|*.jar|*.so|*.dll|*.dylib|*.exe|*.bin|*.mp4|*.mp3|*.ogg|*.woff|*.woff2|*.ttf|*.eot)
+                  continue
+                  ;;
+              esac
+
+              full_path="${repo_dir}/${file}"
+              [ -f "${full_path}" ] || continue
+
+              if ! grep -Iq . "${full_path}"; then
+                continue
+              fi
+
+              if grep -Eq 'github\.com/NREL-Sienna|NREL-Sienna/' "${full_path}"; then
+                changed_files+=("${file}")
+                if [ "${DRY_RUN}" != "true" ]; then
+                  sed -i \
+                    -e 's#github\.com/NREL-Sienna#github.com/Sienna-Platform#g' \
+                    -e 's#NREL-Sienna/#Sienna-Platform/#g' \
+                    "${full_path}"
+                fi
+              fi
+            done < <(git -C "${repo_dir}" ls-files -z)
+
+            if [ "${#changed_files[@]}" -eq 0 ]; then
+              echo "No matching links found in ${repo}."
+              skipped_no_matches+=("${repo}")
+              continue
+            fi
+
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "Dry run: ${repo} would update ${#changed_files[@]} file(s):"
+              printf '  - %s\n' "${changed_files[@]}"
+              dry_run_repos+=("${repo}")
+              continue
+            fi
+
+            git -C "${repo_dir}" checkout -b "${BRANCH_NAME}"
+            git -C "${repo_dir}" config user.name "github-actions[bot]"
+            git -C "${repo_dir}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git -C "${repo_dir}" add -A
+
+            if git -C "${repo_dir}" diff --cached --quiet; then
+              echo "No effective diff after replacements in ${repo}; skipping."
+              skipped_no_matches+=("${repo}")
+              continue
+            fi
+
+            git -C "${repo_dir}" commit -m "${COMMIT_MESSAGE}"
+            git -C "${repo_dir}" push --set-upstream origin "${BRANCH_NAME}"
+
+            pr_body="This automated update replaces old \`NREL-Sienna\` GitHub references with \`Sienna-Platform\` equivalents.\n\nUpdated patterns:\n- \`github.com/NREL-Sienna\` → \`github.com/Sienna-Platform\`\n- \`NREL-Sienna/\` → \`Sienna-Platform/\`"
+
+            gh pr create \
+              --repo "${ORG}/${repo}" \
+              --base "$(git -C "${repo_dir}" remote show origin | sed -n '/HEAD branch/s/.*: //p')" \
+              --head "${BRANCH_NAME}" \
+              --title "${PR_TITLE}" \
+              --body "${pr_body}"
+
+            updated_repos+=("${repo}")
+            echo "Opened PR for ${repo}."
+          done
+
+          echo ""
+          echo "===== Summary ====="
+          echo "Updated repos (PR opened): ${#updated_repos[@]}"
+          [ "${#updated_repos[@]}" -gt 0 ] && printf '  - %s\n' "${updated_repos[@]}"
+
+          echo "Dry-run repos with planned changes: ${#dry_run_repos[@]}"
+          [ "${#dry_run_repos[@]}" -gt 0 ] && printf '  - %s\n' "${dry_run_repos[@]}"
+
+          echo "Skipped archived repos: ${#skipped_archived[@]}"
+          [ "${#skipped_archived[@]}" -gt 0 ] && printf '  - %s\n' "${skipped_archived[@]}"
+
+          echo "Skipped (existing open PR): ${#skipped_existing_pr[@]}"
+          [ "${#skipped_existing_pr[@]}" -gt 0 ] && printf '  - %s\n' "${skipped_existing_pr[@]}"
+
+          echo "Skipped (branch already exists): ${#skipped_branch_exists[@]}"
+          [ "${#skipped_branch_exists[@]}" -gt 0 ] && printf '  - %s\n' "${skipped_branch_exists[@]}"
+
+          echo "Skipped (no matches): ${#skipped_no_matches[@]}"
+          [ "${#skipped_no_matches[@]}" -gt 0 ] && printf '  - %s\n' "${skipped_no_matches[@]}"
+
+          echo "Errored repos: ${#errored_repos[@]}"
+          [ "${#errored_repos[@]}" -gt 0 ] && printf '  - %s\n' "${errored_repos[@]}"
